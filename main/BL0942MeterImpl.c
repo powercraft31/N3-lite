@@ -28,8 +28,8 @@ static uint32_t bl0942_impl_get_power(void)
 {
     BL0942_Data_t data;
     if (bl0942_get_data(&data)) {
-        /* BL0942 stores power in 0.1W (uint16_t), IMeter spec requires 1W (uint32_t) */
-        return (uint32_t)(data.power / 10);
+        /* BL0942 stores power in 1W units (uint16_t); IMeter spec requires 1W (uint32_t), direct cast */
+        return (uint32_t)data.power;
     }
     return 0;
 }
