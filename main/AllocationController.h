@@ -92,5 +92,10 @@ void ProcessTwoStations(ChargingStation *stations, int stationCount);
 ********************************************************************************/
 uint16_t RoundCurrent(uint16_t current);
 
+#ifdef UNIT_TEST
+void alloc_ctrl_test_set_vars(uint16_t inflow, uint16_t meter_curr_01A);
+void alloc_ctrl_test_run_cycle(ChargingStation *stations, int count);
+#endif
+
 #endif
 

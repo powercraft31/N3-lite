@@ -995,3 +995,39 @@ uint16_t RoundCurrent(uint16_t current)
     return (current + 10) / 100;
 }
 
+#ifdef UNIT_TEST
+/**
+ * @brief Test helper: set static vars that AutoControl_task normally sets
+ *        before calling ProcessAllStations().
+ * @param inflow  Household inflow current in Amperes (same unit as GPIOManager returns)
+ * @param meter_curr_01A  Meter current in 0.1A units (same as s_meter->get_current())
+ */
+void alloc_ctrl_test_set_vars(uint16_t inflow, uint16_t meter_curr_01A)
+{
+    /* InflowCurrent and MeterCurrVlaue are static in this file — accessible directly */
+    InflowCurrent  = inflow;
+    MeterCurrVlaue = (meter_curr_01A + 9) / 10;  /* matches AutoControl_task rounding */
+}
+
+/**
+ * @brief Test helper: run freshness check + ProcessAllStations in one call,
+ *        mimicking AutoControl_task critical path.
+ */
+void alloc_ctrl_test_run_cycle(ChargingStation *stations, int count)
+{
+    /* Freshness gate (same as AutoControl_task) */
+    if (s_meter != NULL) {
+        MeterDataFreshness_t freshness = meter_check_freshness(s_meter);
+        if (freshness == METER_DATA_INVALID) {
+            emergency_suspend_all_stations();
+            return;
+        }
+        if (freshness == METER_DATA_STALE) {
+            emergency_reduce_to_min_current();
+            return;
+        }
+    }
+    ProcessAllStations(stations, count);
+}
+#endif /* UNIT_TEST */
+
