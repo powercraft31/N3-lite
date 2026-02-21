@@ -2,7 +2,6 @@
 #include "freertos/task.h"
 #include "AllocationController.h"
 #include <string.h>
-#include "BL0942Meter.h"
 #include "DeBug.h"
 #include "ConfigManager.h"
 #include "CTimer.h"
@@ -21,6 +20,9 @@ static char priorityStationMac[20] = {0};  // 优先充电桩MAC地址
 
 // 为两个充电桩维护稳定电流跟踪器
 static StableCurrentTracker stableTrackers[CHAEGING_STATION_MAX_NUM] = {0};
+
+// IMeter interface pointer (injected via meter_init)
+static const IMeter_t *s_meter = NULL;
 
 /********************************************************
 *@Function name:IsStationCharging
@@ -144,8 +146,69 @@ static void ResetStableCurrentTracker(uint8_t trackerIndex)
     memset(&stableTrackers[trackerIndex], 0, sizeof(StableCurrentTracker));
 }
 
+void meter_init(const IMeter_t *meter)
+{
+    s_meter = meter;
+}
+
+/**
+ * @brief Emergency: suspend all charging stations (meter data INVALID)
+ */
+static void emergency_suspend_all_stations(void)
+{
+    char jsonData[256] = {0};
+    int stationCount = 0;
+    ChargingStation *stations = SelectAllChargeStation(&stationCount);
+
+    if (stations == NULL || stationCount <= 0) {
+        return;
+    }
+
+    dPrint(WARN, "Meter data INVALID - emergency suspend all stations\n");
+    snprintf(jsonData, sizeof(jsonData),
+             "{\"content\":\"Meter data invalid, emergency suspend\",\"value\":\"0\"}");
+    PublishEvent(EVENT_AUTO_CONTROL_MONITOR, jsonData, strlen(jsonData));
+
+    for (int i = 0; i < stationCount; i++) {
+        if (IsStationCharging(&stations[i])) {
+            stations[i].limitCurrent = 0;
+            PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR, (char *)&stations[i], sizeof(ChargingStation));
+            PublishEvent(EVENT_AUTO_SUSPEND, (char *)&stations[i], sizeof(ChargingStation));
+        }
+    }
+}
+
+/**
+ * @brief Emergency: reduce all charging stations to EV_MIN_CURRENT (meter data STALE)
+ */
+static void emergency_reduce_to_min_current(void)
+{
+    char jsonData[256] = {0};
+    int stationCount = 0;
+    ChargingStation *stations = SelectAllChargeStation(&stationCount);
+
+    if (stations == NULL || stationCount <= 0) {
+        return;
+    }
+
+    dPrint(WARN, "Meter data STALE - reducing all stations to min current (%dA)\n", EV_MIN_CURRENT);
+    snprintf(jsonData, sizeof(jsonData),
+             "{\"content\":\"Meter data stale, limit to min current\",\"value\":\"%d\"}", EV_MIN_CURRENT);
+    PublishEvent(EVENT_AUTO_CONTROL_MONITOR, jsonData, strlen(jsonData));
+
+    for (int i = 0; i < stationCount; i++) {
+        if (IsStationCharging(&stations[i])) {
+            stations[i].limitCurrent = EV_MIN_CURRENT * 100;
+            if (stations[i].enumStatus == SuspendEvse) {
+                PublishEvent(EVENT_AUTO_START, (char *)&stations[i], sizeof(ChargingStation));
+            }
+            PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR, (char *)&stations[i], sizeof(ChargingStation));
+        }
+    }
+}
+
 esp_err_t AutoControlInit(void)
-{  
+{
     //启动控制线程
     xTaskCreate(&AutoControl_task, "AutoControl_task", 4096, NULL, 5, NULL);
     return ESP_OK;
@@ -159,9 +222,27 @@ void AutoControl_task(void *pvParameter)
         if(LOAD_BALANCE_CAL == 1)
         {
             LOAD_BALANCE_CAL = 0;
-            //负载均衡算法
+
+            // === Meter data freshness gate ===
+            if (s_meter != NULL)
+            {
+                MeterDataFreshness_t freshness = meter_check_freshness(s_meter);
+                if (freshness == METER_DATA_INVALID)
+                {
+                    emergency_suspend_all_stations();
+                    goto task_sleep;
+                }
+                if (freshness == METER_DATA_STALE)
+                {
+                    emergency_reduce_to_min_current();
+                    goto task_sleep;
+                }
+            }
+
+            // === Normal load balance logic ===
             InflowCurrent = GPIOManager_GetInletCurrent();
-            MeterCurrVlaue = (bl0942_get_current() + 9) / 10; // 0942电流值向上取整计算
+            MeterCurrVlaue = (s_meter != NULL) ?
+                (s_meter->get_current() + 9) / 10 : 0;
             int stationCount = 0;
             ChargingStation *stations = SelectAllChargeStation(&stationCount);
 
@@ -175,9 +256,10 @@ void AutoControl_task(void *pvParameter)
                 dPrint(DEBUG, "当前没有充电桩在线\n");
             }
         }
+task_sleep:
         vTaskDelay(pdMS_TO_TICKS(100));  // 每次延时1ms
         taskYIELD();  // 主动让出CPU，给低优先级任务（包括IDLE）运行机会
-       
+
     }
 
 }

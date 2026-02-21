@@ -131,4 +131,11 @@ int bl0942_set_coef(const char *coef_json);
  */
 int bl0942_get_coef(char *buffer, size_t buffer_size);
 
+/**
+ * @brief Get the tick count of the last successful BL0942 query
+ * @return FreeRTOS xTaskGetTickCount() value at last successful query.
+ *         Returns 0 if no successful query has occurred yet.
+ */
+uint32_t bl0942_get_last_update_tick(void);
+
 #endif

@@ -41,7 +41,11 @@
 #include "OTAManager.h"
 #include "PortDeBugService.h"
 #include "BL0942Meter.h"
+#include "IMeter.h"
 #include "OrderStorage.h"
+
+/* BL0942 IMeter instance (defined in BL0942MeterImpl.c) */
+extern const IMeter_t g_bl0942_meter;
 #define HASH_LEN 32
 
 #ifdef CONFIG_EXAMPLE_FIRMWARE_UPGRADE_BIND_IF
@@ -237,6 +241,8 @@ void app_main(void)
     ESP_ERROR_CHECK(BLEManager_Init());
     //初始化OTA管理器（检查并设置出厂版本号）
     ESP_ERROR_CHECK(OTAManager_Init());
+    //初始化Meter HAL (inject BL0942 implementation)
+    meter_init(&g_bl0942_meter);
     //初始化自动控制任务
     AutoControlInit();
     //初始化订单存储模块

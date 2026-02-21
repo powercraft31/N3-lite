@@ -4,6 +4,7 @@ idf_component_register(SRCS
 					"main.c"
 					"AllocationController.c"
 					"BL0942Meter.c"
+					"BL0942MeterImpl.c"
 					"CEvent.c"
 					"ChargingStationManager.c"
 					"ConfigManager.c"

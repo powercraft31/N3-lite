@@ -19,6 +19,9 @@
 // BL0942 数据存储
 static BL0942_Data_t bl0942_data = {0};
 
+// Last successful query tick (FreeRTOS monotonic, for IMeter freshness check)
+static uint32_t s_last_update_tick = 0;
+
 // BL0942 转换系数（全局变量，可根据实际校准修改）
 BL0942_Coef_t bl0942_coef = {
     .voltage = 916.581,         // 电压转换系数
@@ -269,6 +272,9 @@ void bl0942_query_all_registers(void)
         bl0942_data.energy = (uint32_t)bl0942_convert_to_actual(temp_data[3], bl0942_coef.energy, true);
         bl0942_data.frequency = (uint16_t)((bl0942_coef.frequency / (float)temp_data[4]) * BL0942_DATA_CONVERT_COEF);
 
+        // Record successful query tick for IMeter freshness tracking
+        s_last_update_tick = xTaskGetTickCount();
+
         // 每10秒打印一次数据
         uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
         if (current_time - last_print_time >= 10000) {
@@ -431,4 +437,14 @@ int bl0942_get_coef(char *buffer, size_t buffer_size)
 
     dPrint(INFO, "从NVS读取BL0942系数成功: %s\n", buffer);
     return 0;
+}
+
+/**
+ * @brief Get the tick count of the last successful BL0942 query
+ * @return FreeRTOS xTaskGetTickCount() value at last successful query.
+ *         Returns 0 if no successful query has occurred yet.
+ */
+uint32_t bl0942_get_last_update_tick(void)
+{
+    return s_last_update_tick;
 }

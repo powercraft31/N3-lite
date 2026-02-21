@@ -4,6 +4,7 @@
 #include "ChargingStation.h"
 #include "esp_err.h"
 #include "CTimer.h"
+#include "IMeter.h"
 
 // EV充电桩电流配置范围
 #define EV_MIN_CURRENT             6     // EV充电桩最小电流 6A
@@ -32,6 +33,14 @@ typedef struct {
 *@Return:ESP_OK成功
 ********************************************************************************/
 esp_err_t AutoControlInit(void);
+
+/********************************************************
+*@Function name:meter_init
+*@Description:Inject IMeter interface for load balancing
+*@input param:meter Pointer to IMeter instance (must not be NULL)
+*@Return:
+********************************************************************************/
+void meter_init(const IMeter_t *meter);
 
 /********************************************************
 *@Function name:AutoControl_task
