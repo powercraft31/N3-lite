@@ -1,0 +1,41 @@
+# Embed the server root certificate into the final binary
+idf_build_get_property(project_dir PROJECT_DIR)
+idf_component_register(SRCS
+					"main.c"
+					"AllocationController.c"
+					"BL0942Meter.c"
+					"CEvent.c"
+					"ChargingStationManager.c"
+					"ConfigManager.c"
+					"CTimer.c"
+					"DeBug.c"
+					"PlcAtcmd3121.c"
+					"PlcManager.c"
+					"PortDeBugService.c"
+					"HexUtils.c"
+					"StringUtils.c"
+					"Watchdog.c"
+					"PlcModule3121.c"
+					"led.c"
+					"serial.c"
+					"gpio_init.c"
+					"systick.c"
+					"GPIOManager.c"
+					"PlcRecvQueue.c"
+					"PlcSendQueue.c"
+					"PlcProtocolService.c"
+					"WifiManager.c"
+					"Crc16Xom.c"
+					"ChargingStationManagerController.c"
+					"BLEManager.c"
+					"OTAManager.c"
+					"RPCServer.c"
+					"HwTimer.c"
+					"ConfigManagerController.c"
+					"SystemMaintenance.c"
+					"OrderStorage.c"
+                    INCLUDE_DIRS "."
+                    PRIV_REQUIRES esp_http_client app_update esp_https_ota
+                                  esp_netif mbedtls nvs_flash esp_wifi esp_psram esp_driver_gpio esp_driver_uart json
+								  bt
+                    EMBED_TXTFILES ${project_dir}/server_certs/ca_cert.pem)

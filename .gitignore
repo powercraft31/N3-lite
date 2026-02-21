@@ -1,0 +1,8 @@
+*.tmp
+*.o
+.build/
+.build/*
+build/*
+.vscode/
+dependencies.lock
+output/
