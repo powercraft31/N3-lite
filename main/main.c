@@ -42,6 +42,7 @@
 #include "PortDeBugService.h"
 #include "BL0942Meter.h"
 #include "IMeter.h"
+#include "DefaultCommImpl.h"
 #include "OrderStorage.h"
 
 /* BL0942 IMeter instance (defined in BL0942MeterImpl.c) */
@@ -243,6 +244,8 @@ void app_main(void)
     ESP_ERROR_CHECK(OTAManager_Init());
     //初始化Meter HAL (inject BL0942 implementation)
     meter_init(&g_bl0942_meter);
+    //初始化Comm Platform HAL (inject default implementation)
+    comm_init(&g_default_comm);
     //初始化自动控制任务
     AutoControlInit();
     //初始化订单存储模块

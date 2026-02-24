@@ -7,7 +7,7 @@
 #include "CTimer.h"
 #include "ChargingStationManager.h"
 #include "GPIOManager.h"
-#include "CEvent.h"
+#include "ICommPlatform.h"
 
 static int16_t LOAD_BALANCE_CAL = 0;//负载平衡标志
 static bool lastModeDualCharging = false; // 记录上一次是否为双桩充电模式
@@ -23,6 +23,17 @@ static StableCurrentTracker stableTrackers[CHAEGING_STATION_MAX_NUM] = {0};
 
 // IMeter interface pointer (injected via meter_init)
 static const IMeter_t *s_meter = NULL;
+
+/* ---------- Comm Platform dependency injection ---------- */
+static const ICommPlatform_t *s_comm = NULL;
+
+void comm_init(const ICommPlatform_t *comm)
+{
+    s_comm = comm;
+}
+
+#define COMM_CALL(fn, ...) \
+    do { if (s_comm != NULL && s_comm->fn != NULL) s_comm->fn(__VA_ARGS__); } while(0)
 
 /********************************************************
 *@Function name:IsStationCharging
@@ -156,7 +167,6 @@ void meter_init(const IMeter_t *meter)
  */
 static void emergency_suspend_all_stations(void)
 {
-    char jsonData[256] = {0};
     int stationCount = 0;
     ChargingStation *stations = SelectAllChargeStation(&stationCount);
 
@@ -165,15 +175,13 @@ static void emergency_suspend_all_stations(void)
     }
 
     dPrint(WARN, "Meter data INVALID - emergency suspend all stations\n");
-    snprintf(jsonData, sizeof(jsonData),
-             "{\"content\":\"Meter data invalid, emergency suspend\",\"value\":\"0\"}");
-    PublishEvent(EVENT_AUTO_CONTROL_MONITOR, jsonData, strlen(jsonData));
+    COMM_CALL(report_dlb_status, "Meter data invalid, emergency suspend", 0);
 
     for (int i = 0; i < stationCount; i++) {
         if (IsStationCharging(&stations[i])) {
             stations[i].limitCurrent = 0;
-            PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR, (char *)&stations[i], sizeof(ChargingStation));
-            PublishEvent(EVENT_AUTO_SUSPEND, (char *)&stations[i], sizeof(ChargingStation));
+            COMM_CALL(send_limit_current_cmd, &stations[i]);
+            COMM_CALL(send_suspend_cmd, &stations[i]);
         }
     }
 }
@@ -183,7 +191,6 @@ static void emergency_suspend_all_stations(void)
  */
 static void emergency_reduce_to_min_current(void)
 {
-    char jsonData[256] = {0};
     int stationCount = 0;
     ChargingStation *stations = SelectAllChargeStation(&stationCount);
 
@@ -192,17 +199,15 @@ static void emergency_reduce_to_min_current(void)
     }
 
     dPrint(WARN, "Meter data STALE - reducing all stations to min current (%dA)\n", EV_MIN_CURRENT);
-    snprintf(jsonData, sizeof(jsonData),
-             "{\"content\":\"Meter data stale, limit to min current\",\"value\":\"%d\"}", EV_MIN_CURRENT);
-    PublishEvent(EVENT_AUTO_CONTROL_MONITOR, jsonData, strlen(jsonData));
+    COMM_CALL(report_dlb_status, "Meter data stale, limit to min current", EV_MIN_CURRENT);
 
     for (int i = 0; i < stationCount; i++) {
         if (IsStationCharging(&stations[i])) {
             stations[i].limitCurrent = EV_MIN_CURRENT * 100;
             if (stations[i].enumStatus == SuspendEvse) {
-                PublishEvent(EVENT_AUTO_START, (char *)&stations[i], sizeof(ChargingStation));
+                COMM_CALL(send_start_cmd, &stations[i]);
             }
-            PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR, (char *)&stations[i], sizeof(ChargingStation));
+            COMM_CALL(send_limit_current_cmd, &stations[i]);
         }
     }
 }
@@ -279,8 +284,6 @@ void LoadBalance_TimerFunc(TIMER_ID timerId, char *, int)
 ********************************************************************************/
 void ProcessAllStations(ChargingStation *stations, int stationCount)
 {
-    char jsonData[256] = {0};
-
     if (stations == NULL || stationCount <= 0 || stationCount > CHAEGING_STATION_MAX_NUM)
     {
         return;
@@ -399,8 +402,7 @@ void ProcessAllStations(ChargingStation *stations, int stationCount)
         dPrint(WARN, "电流严重超标，紧急平均分配入户电流\n");
         int16_t emergencyCurrent = InflowCurrent / chargingCount;
 
-        snprintf(jsonData, sizeof(jsonData), "{\"content\":\"电流严重超标，紧急限流\",\"value\":\"%d\"}", emergencyCurrent);
-        PublishEvent(EVENT_AUTO_CONTROL_MONITOR, jsonData, strlen(jsonData));
+        COMM_CALL(report_dlb_status, "电流严重超标，紧急限流", emergencyCurrent);
 
         for (int i = 0; i < chargingCount; i++)
         {
@@ -408,11 +410,11 @@ void ProcessAllStations(ChargingStation *stations, int stationCount)
             if (stations[idx].enumStatus == SuspendEvse)
             {
                 dPrint(INFO, "充电桩%d处于暂停状态，先发布启动事件\n", idx+1);
-                PublishEvent(EVENT_AUTO_START, (char*)&stations[idx], sizeof(ChargingStation));
+                COMM_CALL(send_start_cmd, &stations[idx]);
             }
             stations[idx].limitCurrent = emergencyCurrent * 100;
             dPrint(INFO, "充电桩%d紧急限流: %d A\n", idx+1, emergencyCurrent);
-            PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR, (char*)&stations[idx], sizeof(ChargingStation));
+            COMM_CALL(send_limit_current_cmd, &stations[idx]);
         }
         return;
     }
@@ -441,8 +443,7 @@ void ProcessAllStations(ChargingStation *stations, int stationCount)
             int selectedStationIdx = chargingIndexes[selectedIdx];
             dPrint(WARN, "总电流不足以满足所有桩最小需求，仅启动优先桩: %s\n",
                    stations[selectedStationIdx].mac);
-            snprintf(jsonData, sizeof(jsonData), "{\"content\":\"总电流不足，优先先充电的桩\",\"value\":\"%d\"}", totalAvail);
-            PublishEvent(EVENT_AUTO_CONTROL_MONITOR, jsonData, strlen(jsonData));
+            COMM_CALL(report_dlb_status, "总电流不足，优先先充电的桩", totalAvail);
 
             for (int i = 0; i < chargingCount; i++)
             {
@@ -457,18 +458,18 @@ void ProcessAllStations(ChargingStation *stations, int stationCount)
                     if (stations[idx].enumStatus == SuspendEvse)
                     {
                         dPrint(INFO, "充电桩 %s 处于暂停状态，先发布启动事件\n", stations[idx].mac);
-                        PublishEvent(EVENT_AUTO_START, (char*)&stations[idx], sizeof(ChargingStation));
+                        COMM_CALL(send_start_cmd, &stations[idx]);
                     }
                     dPrint(INFO, "充电桩 %s 分配全部电流: %d A\n", stations[idx].mac, allocCurrent);
-                    PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR, (char*)&stations[idx], sizeof(ChargingStation));
+                    COMM_CALL(send_limit_current_cmd, &stations[idx]);
                 }
                 else
                 {
                     // 其他桩暂停
                     stations[idx].limitCurrent = 0;
                     dPrint(WARN, "充电桩 %s 暂停充电\n", stations[idx].mac);
-                    PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR, (char*)&stations[idx], sizeof(ChargingStation));
-                    PublishEvent(EVENT_AUTO_SUSPEND, (char*)&stations[idx], sizeof(ChargingStation));
+                    COMM_CALL(send_limit_current_cmd, &stations[idx]);
+                    COMM_CALL(send_suspend_cmd, &stations[idx]);
                 }
             }
         }
@@ -476,16 +477,15 @@ void ProcessAllStations(ChargingStation *stations, int stationCount)
         {
             // 所有桩都暂停
             dPrint(WARN, "总电流不足，所有充电桩暂停\n");
-            snprintf(jsonData, sizeof(jsonData), "{\"content\":\"总电流不足，所有桩暂停\",\"value\":\"%d\"}", totalAvail);
-            PublishEvent(EVENT_AUTO_CONTROL_MONITOR, jsonData, strlen(jsonData));
+            COMM_CALL(report_dlb_status, "总电流不足，所有桩暂停", totalAvail);
 
             for (int i = 0; i < chargingCount; i++)
             {
                 int idx = chargingIndexes[i];
                 stations[idx].limitCurrent = 0;
                 dPrint(WARN, "充电桩%d设置电流为0并暂停\n", idx+1);
-                PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR, (char*)&stations[idx], sizeof(ChargingStation));
-                PublishEvent(EVENT_AUTO_SUSPEND, (char*)&stations[idx], sizeof(ChargingStation));
+                COMM_CALL(send_limit_current_cmd, &stations[idx]);
+                COMM_CALL(send_suspend_cmd, &stations[idx]);
             }
         }
         return;
@@ -582,15 +582,13 @@ void ProcessAllStations(ChargingStation *stations, int stationCount)
         if (stations[idx].enumStatus == SuspendEvse)
         {
             dPrint(INFO, "充电桩%d处于暂停状态，先发布启动事件\n", idx+1);
-            PublishEvent(EVENT_AUTO_START, (char*)&stations[idx], sizeof(ChargingStation));
+            COMM_CALL(send_start_cmd, &stations[idx]);
         }
 
-        PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR, (char*)&stations[idx], sizeof(ChargingStation));
+        COMM_CALL(send_limit_current_cmd, &stations[idx]);
     }
 
-    snprintf(jsonData, sizeof(jsonData), "{\"content\":\"完成%d个桩的负载均衡分配\",\"value\":\"%d\"}",
-             chargingCount, baseAllocation);
-    PublishEvent(EVENT_AUTO_CONTROL_MONITOR, jsonData, strlen(jsonData));
+    COMM_CALL(report_dlb_status, "完成负载均衡分配", baseAllocation);
 }
 
 /********************************************************
@@ -601,7 +599,6 @@ void ProcessAllStations(ChargingStation *stations, int stationCount)
 ********************************************************************************/
 void ProcessSingleStation(ChargingStation *station)
 {
-    char jsonData[256] = {0};
     // 检查充电桩是否正在充电
     if (IsStationCharging(station))
     {
@@ -630,14 +627,14 @@ void ProcessSingleStation(ChargingStation *station)
             if (station->enumStatus == SuspendEvse)
             {
                  dPrint(INFO, "充电桩处于暂停状态，先发布启动事件\n");
-                PublishEvent(EVENT_AUTO_START, (char*)station, sizeof(ChargingStation));
+                COMM_CALL(send_start_cmd, station);
             }
             station->limitCurrent = InflowCurrent*100;
             dPrint(INFO, "设置限制电流: %d A\n", station->limitCurrent/100);
-            PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR,(char *)station, sizeof(ChargingStation));//发布限制电流事件
+            COMM_CALL(send_limit_current_cmd, station);
             return;
         }
- 
+
         if(RoundCurrent(station->acCurrentL1) > MeterCurrVlaue)
         {
             //充电桩的电流>电表电流,说明电表数据是错误的，不用处理
@@ -654,25 +651,17 @@ void ProcessSingleStation(ChargingStation *station)
             station->limitCurrent = 0;
             dPrint(WARN, "可用电流不足,设置为0 A\n");
             //发布自动化监控控制过程调试消息
-            snprintf(jsonData,sizeof(jsonData),"%s%s%s%s%s",
-				"{\"content\":\"","可用电流不足,设置为0A",
-				"\",\"value\":\"","0",
-				"\"}");
-            PublishEvent(EVENT_AUTO_CONTROL_MONITOR,jsonData,strlen(jsonData));
+            COMM_CALL(report_dlb_status, "可用电流不足,设置为0A", 0);
             // 先发送设置电流为0的事件，再发送暂停事件
-            PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR, (char*)station, sizeof(ChargingStation));
-            PublishEvent(EVENT_AUTO_SUSPEND, (char*)station, sizeof(ChargingStation));
+            COMM_CALL(send_limit_current_cmd, station);
+            COMM_CALL(send_suspend_cmd, station);
         }
         else if (Avail > station->maxlimitCurrent)
         {
             station->limitCurrent = station->maxlimitCurrent * 100;
             dPrint(INFO, "限制电流不超过充电桩最大限制电流: %d A\n", Avail);
             //发布自动化监控控制过程调试消息
-            snprintf(jsonData,sizeof(jsonData),"%s%s%s%d%s",
-				"{\"content\":\"","可限制电流不超过充电桩最大限制电流Avail",
-				"\",\"value\":\"",Avail,
-				"\"}");
-            PublishEvent(EVENT_AUTO_CONTROL_MONITOR,jsonData,strlen(jsonData));
+            COMM_CALL(report_dlb_status, "可限制电流不超过充电桩最大限制电流Avail", Avail);
         }
         else
         {
@@ -699,22 +688,14 @@ void ProcessSingleStation(ChargingStation *station)
         if (station->enumStatus == SuspendEvse)
         {
             dPrint(INFO, "充电桩处于暂停状态，先发布启动事件\n");
-            PublishEvent(EVENT_AUTO_START, (char*)station, sizeof(ChargingStation));
+            COMM_CALL(send_start_cmd, station);
             //发布自动化监控控制过程调试消息
-            snprintf(jsonData,sizeof(jsonData),"%s%s%s%s%s",
-				"{\"content\":\"","充电桩处于暂停状态，先发布启动事件",
-				"\",\"value\":\"","0",
-				"\"}");
-            PublishEvent(EVENT_AUTO_CONTROL_MONITOR,jsonData,strlen(jsonData));    
+            COMM_CALL(report_dlb_status, "充电桩处于暂停状态，先发布启动事件", 0);
         }
         dPrint(INFO, "设置限制电流: %d A\n", station->limitCurrent);
-        PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR, (char*)station, sizeof(ChargingStation));//发布限制电流事件
+        COMM_CALL(send_limit_current_cmd, station);
         //发布自动化监控控制过程调试消息
-        snprintf(jsonData,sizeof(jsonData),"%s%s%s%d%s",
-				"{\"content\":\"","设置限制电流:",
-				"\",\"value\":\"",station->limitCurrent,
-				"\"}");
-         PublishEvent(EVENT_AUTO_CONTROL_MONITOR,jsonData,strlen(jsonData));    
+        COMM_CALL(report_dlb_status, "设置限制电流:", station->limitCurrent);
     }
     else
     {
@@ -731,7 +712,6 @@ void ProcessSingleStation(ChargingStation *station)
 ********************************************************************************/
 void ProcessTwoStations(ChargingStation *stations, int stationCount)
 {
-    char jsonData[256] = {0};
     // 检查两个桩的充电状态
     bool station1Charging = IsStationCharging(&stations[0]);
     bool station2Charging = IsStationCharging(&stations[1]);
@@ -741,11 +721,7 @@ void ProcessTwoStations(ChargingStation *stations, int stationCount)
         // 两个桩都在充电，需要平均分配可用电流
         dPrint(INFO, "两个充电桩都在充电，平均分配电流\n");
         //发布自动化监控控制过程调试消息
-        snprintf(jsonData,sizeof(jsonData),"%s%s%s%s%s",
-				"{\"content\":\"","两个充电桩都在充电，平均分配电流",
-				"\",\"value\":\"","0",
-				"\"}");
-        PublishEvent(EVENT_AUTO_CONTROL_MONITOR,jsonData,strlen(jsonData));    
+        COMM_CALL(report_dlb_status, "两个充电桩都在充电，平均分配电流", 0);
 
         // 计算总可用电流
         int16_t totalAvail = InflowCurrent - (MeterCurrVlaue - RoundCurrent(stations[0].acCurrentL1) - RoundCurrent(stations[1].acCurrentL1));
@@ -772,8 +748,8 @@ void ProcessTwoStations(ChargingStation *stations, int stationCount)
         {
             station2CurrentL = (stations[1].acCurrentL1 == 0)?stations[1].maxlimitCurrent:RoundCurrent(stations[1].acCurrentL1);
         }
-        if(station1CurrentL > InflowCurrent 
-            || station2CurrentL > InflowCurrent 
+        if(station1CurrentL > InflowCurrent
+            || station2CurrentL > InflowCurrent
             || (station1CurrentL + station2CurrentL) > InflowCurrent
             || totalAvail < 0
           )
@@ -785,13 +761,13 @@ void ProcessTwoStations(ChargingStation *stations, int stationCount)
                 // 如果充电桩处于暂停状态，需要先发布启动事件
                 if (stations[i].enumStatus == SuspendEvse)
                 {
-                    PublishEvent(EVENT_AUTO_START, (char*)&stations[i], sizeof(ChargingStation));
+                    COMM_CALL(send_start_cmd, &stations[i]);
                 }
                 stations[i].limitCurrent = (InflowCurrent/CHAEGING_STATION_MAX_NUM)*100;
                 dPrint(INFO, "i:%d,num:%d,mac:%s设置限制电流: %d A\n",i,CHAEGING_STATION_MAX_NUM,stations[i].mac,stations[i].limitCurrent/100);
-                PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR,(char *)&stations[i], sizeof(ChargingStation));//发布限制电流事件
+                COMM_CALL(send_limit_current_cmd, &stations[i]);
             }
-            
+
             return;
         }
 
@@ -815,11 +791,7 @@ void ProcessTwoStations(ChargingStation *stations, int stationCount)
             // 平均电流足够，两个桩都可以充电
             lastModeDualCharging = true; // 更新模式状态
             dPrint(INFO, "平均电流充足(%d A >= %d A)，两个充电桩平均分配\n", avgCurrent, threshold);
-            snprintf(jsonData,sizeof(jsonData),"%s%s%s%d%s",
-                    "{\"content\":\"","两个充电桩平均分配电流",
-                    "\",\"value\":\"",avgCurrent,
-                    "\"}");
-            PublishEvent(EVENT_AUTO_CONTROL_MONITOR,jsonData,strlen(jsonData));
+            COMM_CALL(report_dlb_status, "两个充电桩平均分配电流", avgCurrent);
 
             // 循环处理两个充电桩
             for (int i = 0; i < 2; i++)
@@ -856,9 +828,9 @@ void ProcessTwoStations(ChargingStation *stations, int stationCount)
                 if (stations[i].enumStatus == SuspendEvse)
                 {
                     dPrint(INFO, "充电桩%d处于暂停状态，先发布启动事件\n", i + 1);
-                    PublishEvent(EVENT_AUTO_START, (char*)&stations[i], sizeof(ChargingStation));
+                    COMM_CALL(send_start_cmd, &stations[i]);
                 }
-                PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR, (char*)&stations[i], sizeof(ChargingStation));
+                COMM_CALL(send_limit_current_cmd, &stations[i]);
             }
         }
         else if (totalAvail >= EV_MIN_CURRENT)
@@ -869,11 +841,7 @@ void ProcessTwoStations(ChargingStation *stations, int stationCount)
 
             dPrint(WARN, "平均电流不足(%d A < %d A)，但总电流充足(%d A)，选择充电桩%d充电\n",
                    avgCurrent, threshold, totalAvail, selectedStation + 1);
-            snprintf(jsonData,sizeof(jsonData),"%s%s%d%s%s%d%s",
-                    "{\"content\":\"","平均电流不足，选择充电桩",selectedStation + 1,"充电",
-                    "\",\"value\":\"",totalAvail,
-                    "\"}");
-            PublishEvent(EVENT_AUTO_CONTROL_MONITOR,jsonData,strlen(jsonData));
+            COMM_CALL(report_dlb_status, "平均电流不足，选择充电桩1充电", totalAvail);
 
             for (int i = 0; i < 2; i++)
             {
@@ -910,9 +878,9 @@ void ProcessTwoStations(ChargingStation *stations, int stationCount)
                     // 如果充电桩处于暂停状态，需要先发布启动事件
                     if (stations[i].enumStatus == SuspendEvse)
                     {
-                        PublishEvent(EVENT_AUTO_START, (char*)&stations[i], sizeof(ChargingStation));
+                        COMM_CALL(send_start_cmd, &stations[i]);
                     }
-                    PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR, (char*)&stations[i], sizeof(ChargingStation));
+                    COMM_CALL(send_limit_current_cmd, &stations[i]);
                 }
                 else
                 {
@@ -920,8 +888,8 @@ void ProcessTwoStations(ChargingStation *stations, int stationCount)
                     stations[i].limitCurrent = 0;
                     dPrint(WARN, "充电桩%d暂停充电\n", i + 1);
                     // 先发送设置电流为0的事件，再发送暂停事件
-                    PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR, (char*)&stations[i], sizeof(ChargingStation));
-                    PublishEvent(EVENT_AUTO_SUSPEND, (char*)&stations[i], sizeof(ChargingStation));
+                    COMM_CALL(send_limit_current_cmd, &stations[i]);
+                    COMM_CALL(send_suspend_cmd, &stations[i]);
                 }
             }
         }
@@ -930,11 +898,7 @@ void ProcessTwoStations(ChargingStation *stations, int stationCount)
             // 总电流也不足，两个桩都暂停
             lastModeDualCharging = false; // 更新模式状态
             dPrint(WARN, "总电流不足(%d A < %d A)，两个充电桩都暂停\n", totalAvail, EV_MIN_CURRENT);
-            snprintf(jsonData,sizeof(jsonData),"%s%s%s%d%s",
-                    "{\"content\":\"","总电流不足，两个充电桩都暂停",
-                    "\",\"value\":\"",totalAvail,
-                    "\"}");
-            PublishEvent(EVENT_AUTO_CONTROL_MONITOR,jsonData,strlen(jsonData));
+            COMM_CALL(report_dlb_status, "总电流不足，两个充电桩都暂停", totalAvail);
 
             // 循环处理两个充电桩
             for (int i = 0; i < 2; i++)
@@ -942,8 +906,8 @@ void ProcessTwoStations(ChargingStation *stations, int stationCount)
                 stations[i].limitCurrent = 0;
                 dPrint(WARN, "充电桩%d暂停充电\n", i + 1);
                 // 先发送设置电流为0的事件，再发送暂停事件
-                PublishEvent(EVENT_AUTO_SET_LIMIT_CUUR, (char*)&stations[i], sizeof(ChargingStation));
-                PublishEvent(EVENT_AUTO_SUSPEND, (char*)&stations[i], sizeof(ChargingStation));
+                COMM_CALL(send_limit_current_cmd, &stations[i]);
+                COMM_CALL(send_suspend_cmd, &stations[i]);
             }
         }
     }
@@ -953,11 +917,7 @@ void ProcessTwoStations(ChargingStation *stations, int stationCount)
         lastModeDualCharging = false; // 更新模式状态
         dPrint(INFO, "只有充电桩1在充电，按单桩处理\n");
         ProcessSingleStation(&stations[0]);
-        snprintf(jsonData,sizeof(jsonData),"%s%s%s%s%s",
-                        "{\"content\":\"","只有充电桩1在充电，按单桩处理:",
-                        "\",\"value\":\"","0",
-                        "\"}");
-        PublishEvent(EVENT_AUTO_CONTROL_MONITOR,jsonData,strlen(jsonData));
+        COMM_CALL(report_dlb_status, "只有充电桩1在充电，按单桩处理:", 0);
     }
     else if (station2Charging)
     {
@@ -965,21 +925,13 @@ void ProcessTwoStations(ChargingStation *stations, int stationCount)
         lastModeDualCharging = false; // 更新模式状态
         dPrint(INFO, "只有充电桩2在充电，按单桩处理\n");
         ProcessSingleStation(&stations[1]);
-        snprintf(jsonData,sizeof(jsonData),"%s%s%s%s%s",
-                        "{\"content\":\"","只有充电桩2在充电，按单桩处理:",
-                        "\",\"value\":\"","0",
-                        "\"}");
-        PublishEvent(EVENT_AUTO_CONTROL_MONITOR,jsonData,strlen(jsonData));
+        COMM_CALL(report_dlb_status, "只有充电桩2在充电，按单桩处理:", 0);
     }
     else
     {
         lastModeDualCharging = false; // 更新模式状态
         dPrint(DEBUG, "两个充电桩都未在充电，无需负载均衡\n");
-        snprintf(jsonData,sizeof(jsonData),"%s%s%s%s%s",
-                        "{\"content\":\"","两个充电桩都未在充电，无需负载均衡:",
-                        "\",\"value\":\"","0",
-                        "\"}");
-        PublishEvent(EVENT_AUTO_CONTROL_MONITOR,jsonData,strlen(jsonData));    
+        COMM_CALL(report_dlb_status, "两个充电桩都未在充电，无需负载均衡:", 0);
     }
 }
 
@@ -1030,4 +982,3 @@ void alloc_ctrl_test_run_cycle(ChargingStation *stations, int count)
     ProcessAllStations(stations, count);
 }
 #endif /* UNIT_TEST */
-

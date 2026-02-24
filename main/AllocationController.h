@@ -5,6 +5,7 @@
 #include "esp_err.h"
 #include "CTimer.h"
 #include "IMeter.h"
+#include "ICommPlatform.h"
 
 // EV充电桩电流配置范围
 #define EV_MIN_CURRENT             6     // EV充电桩最小电流 6A
@@ -41,6 +42,13 @@ esp_err_t AutoControlInit(void);
 *@Return:
 ********************************************************************************/
 void meter_init(const IMeter_t *meter);
+
+/**
+ * @brief Inject the communication platform dependency.
+ *        Must be called once before the DLB task starts.
+ * @param comm  Pointer to a fully-populated ICommPlatform_t instance.
+ */
+void comm_init(const ICommPlatform_t *comm);
 
 /********************************************************
 *@Function name:AutoControl_task
